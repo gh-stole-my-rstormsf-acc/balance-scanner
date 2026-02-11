@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Balance Scanner</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%231b8a5a' d='M2 3h12v2H2zM2 7h9v2H2zM2 11h6v2H2z'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <main class="layout">
+    <section class="headline">
+      <div>
+        <div class="kicker">Phase 1 / Client-Side Scanner</div>
+        <h1>Multi-Chain Wallet Balance Scanner</h1>
+        <p class="subtitle">
+          Scan up to hundreds of EVM addresses with provider-aware rate limiting, per-address failure isolation,
+          and export-ready token rows. Runtime scope in this release: Ankr + Moralis.
+        </p>
+      </div>
+      <div class="pill-row">
+        <div class="pill">Modular build runtime</div>
+        <div class="pill">No key persistence</div>
+        <div class="pill">Session budget estimate</div>
+        <button id="theme-toggle" class="button-accent" type="button" aria-label="Toggle theme">Theme: Auto</button>
+      </div>
+    </section>
+
+    <section class="board">
+      <div class="stack">
+        <article class="panel">
+          <h2>1. Address Input</h2>
+          <p>Use CSV upload (first column or <code>address</code>) and/or paste manual addresses. Input is deduplicated and format-validated before scan.</p>
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="manual-input">Manual addresses</label>
+              <textarea id="manual-input" placeholder="0xabc...\n0xdef...\n(or comma-separated)"></textarea>
+            </div>
+            <div class="field">
+              <label>CSV file</label>
+              <div id="dropzone" class="dropzone" tabindex="0" role="button">
+                <strong>Drop CSV here</strong>
+                <span class="muted">or click to choose a file</span>
+                <input id="csv-input" type="file" accept=".csv,text/csv" hidden>
+              </div>
+              <div id="csv-meta" class="footnote">No CSV loaded.</div>
+            </div>
+          </div>
+
+          <div class="stats" id="address-stats">
+            <div class="stat"><div class="label">Valid unique</div><div class="value" id="valid-count">0</div></div>
+            <div class="stat"><div class="label">Invalid</div><div class="value" id="invalid-count">0</div></div>
+            <div class="stat"><div class="label">Input total</div><div class="value" id="input-count">0</div></div>
+          </div>
+          <div id="invalid-preview" class="footnote"></div>
+        </article>
+
+        <article class="panel">
+          <h2>2. Scan</h2>
+          <p>Scan executes with provider defaults for concurrency and exponential backoff on rate-limit responses.</p>
+
+          <div class="actions">
+            <button id="scan-button" class="button-primary" type="button">Start Scan</button>
+            <button id="stop-button" class="button-secondary" type="button" disabled>Stop</button>
+            <button id="export-button" class="button-ghost" type="button" disabled>Export CSV (Full)</button>
+          </div>
+
+          <div class="status" id="status-box" data-type="ok">Ready.</div>
+
+          <div class="progress-wrap">
+            <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+            <div class="mono" id="progress-label">0 / 0 complete</div>
+          </div>
+        </article>
+      </div>
+
+      <div class="stack">
+        <article class="panel">
+          <h2>Provider</h2>
+          <div class="field">
+            <label for="provider-select">Provider</label>
+            <select id="provider-select"></select>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label id="api-key-label" for="api-key-input">API Key</label>
+            <input id="api-key-input" type="text" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label for="chain-filter">Chain filter</label>
+            <select id="chain-filter" multiple aria-label="Chain filter"></select>
+            <div class="field-inline">
+              <span class="footnote">Only selected chains are scanned and rendered.</span>
+              <button id="chain-all-button" class="button-ghost" type="button">Select all</button>
+              <button id="chain-none-button" class="button-ghost" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="provider-help" class="footnote"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Session Budget Estimate</h2>
+          <div class="budget-box" id="budget-box"></div>
+          <div class="footnote" id="budget-footnote">
+            Assumption: estimate only. Prior quota usage is unknown and not tracked in-app.
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label for="dust-filter-input">Dust filter (USD)</label>
+            <input id="dust-filter-input" type="text" value="1.00" inputmode="decimal" aria-label="Dust filter threshold in USD">
+          </div>
+          <div class="footnote">Tokens below this threshold are hidden in details and dashboard.</div>
+        </article>
+
+        <article class="panel">
+          <h2>Provider Info</h2>
+          <div id="provider-info" class="provider-info-grid"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Results</h2>
+      <p>Rows stream in as scans complete. Expand a row for chain/token detail. Export triggers token prefetch for unexpanded rows.</p>
+      <div class="summary-grid" id="summary-grid">
+        <div class="summary-card">
+          <div class="label">Aggregate USD</div>
+          <div class="value" id="summary-total-usd">$0.00</div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Scanned Addresses</div>
+          <div class="value" id="summary-address-count">0</div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Token Coverage</div>
+          <div class="value" id="summary-token-coverage">0 / 0</div>
+        </div>
+      </div>
+
+      <div class="summary-lists">
+        <div class="summary-list">
+          <h3>Top 5 Chains</h3>
+          <ul id="summary-top-chains"><li class="muted">No data yet.</li></ul>
+        </div>
+        <div class="summary-list">
+          <h3>Top 5 Tokens</h3>
+          <ul id="summary-top-tokens"><li class="muted">Load token details to compute rankings.</li></ul>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><button data-sort="address" type="button">Address</button></th>
+              <th><button data-sort="totalUsdValue" type="button">Total USD</button></th>
+              <th><button data-sort="chainCount" type="button">Chains</button></th>
+              <th><button data-sort="tokenCount" type="button">Tokens</button></th>
+              <th><button data-sort="topChain" type="button">Top Chain</button></th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
