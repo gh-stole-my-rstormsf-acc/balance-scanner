@@ -2,6 +2,7 @@ import Papa from 'papaparse';
 import * as Core from './core.js';
 const RELEASE_PHASE = 1;
 const SCAN_ADDRESS_DELAY_MS = 10_000;
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 const CHAIN_NAMES = {
   eth: 'Ethereum',
@@ -170,6 +171,7 @@ const ui = {
   chainNoneButton: document.getElementById('chain-none-button'),
   dustFilterInput: document.getElementById('dust-filter-input'),
   themeToggle: document.getElementById('theme-toggle'),
+  appVersion: document.getElementById('app-version'),
   manualInput: document.getElementById('manual-input'),
   csvInput: document.getElementById('csv-input'),
   dropzone: document.getElementById('dropzone'),
@@ -1394,6 +1396,7 @@ async function initProviders() {
 
 async function boot() {
   applyTheme('auto');
+  ui.appVersion.textContent = `Version v${APP_VERSION}`;
   await initProviders();
   bindEvents();
   updateAddressState();

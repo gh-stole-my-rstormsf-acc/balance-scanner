@@ -20,4 +20,5 @@ test('vite config builds from src into dist', async () => {
 
   assert.equal(config.root, 'src');
   assert.equal(config.build.outDir, '../dist');
+  assert.equal(typeof config.define.__APP_VERSION__, 'string');
 });
