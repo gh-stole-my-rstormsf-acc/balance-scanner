@@ -216,20 +216,20 @@ For per-chain providers, estimator assumes active-chain discovery and an average
 
 ## Technical Architecture
 
-### Single-File HTML App with Provider Adapter Layer
+### Modular Vite App with Provider Adapter Layer
 
 ```
-index.html (single file)
-  CSV Parser (PapaParse via CDN)
-  Provider Adapter Interface
-    adapter.validateKey()
-    adapter.getBalance(address)
-    adapter.getTokens(address)
-    adapter.getSupportedChains()
-    adapter.estimateCost(addressCount)
-  State Manager (provider, apiKey, addresses, results, errors, progress)
-  Request Queue (provider concurrency + backoff)
-  Renderer (provider selector, table, progress, export)
+src/index.html
+src/main.js
+  imports src/app.js and src/styles.css
+src/app.js
+  UI wiring and provider orchestration
+src/core.js
+  pure business logic utilities
+tests/*.test.mjs
+  TDD coverage for core behavior and project structure
+dist/
+  build output (generated, minified)
 ```
 
 ### Provider Adapter Interface
