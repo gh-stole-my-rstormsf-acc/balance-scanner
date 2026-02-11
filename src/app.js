@@ -180,7 +180,6 @@ const ui = {
   invalidCount: document.getElementById('invalid-count'),
   inputCount: document.getElementById('input-count'),
   invalidPreview: document.getElementById('invalid-preview'),
-  budgetBox: document.getElementById('budget-box'),
   statusBox: document.getElementById('status-box'),
   scanButton: document.getElementById('scan-button'),
   stopButton: document.getElementById('stop-button'),
@@ -611,7 +610,7 @@ function selectedChainCount() {
   return state.selectedChains.size > 0 ? state.selectedChains.size : state.activeChainOptions.length;
 }
 
-function getBudgetProviderView() {
+function getScanTimingProviderView() {
   const provider = PROVIDERS[state.providerId];
   const callsPerAddress = provider.supportsMultiChainCall
     ? provider.freeTier.callsPerAddressEstimate
@@ -626,38 +625,11 @@ function getBudgetProviderView() {
   };
 }
 
-function estimateScanTiming(addressCount) {
-  const provider = getBudgetProviderView();
+function estimateScanDurationSeconds(addressCount) {
+  const provider = getScanTimingProviderView();
   const estimate = Core.estimateBudget(provider, addressCount);
   const pacingSeconds = Math.max(0, addressCount - 1) * (SCAN_ADDRESS_DELAY_MS / 1000);
-  const totalEstimatedSeconds = Number((estimate.estimatedSeconds + pacingSeconds).toFixed(1));
-  return { provider, estimate, pacingSeconds, totalEstimatedSeconds };
-}
-
-function updateBudgetUI() {
-  const { provider, estimate, totalEstimatedSeconds } = estimateScanTiming(state.normalized.valid.length);
-  const limitKind = provider.freeTier.limitKind;
-  const limitValueText = provider.freeTier.limitValue === null ? 'unknown' : String(provider.freeTier.limitValue);
-
-  const statusClass = estimate.status === 'likely_exceeds'
-    ? 'error'
-    : estimate.status === 'near_limit'
-      ? 'warn'
-      : 'ok';
-
-  const usageText = estimate.usagePercent === null ? 'n/a' : `${estimate.usagePercent.toFixed(2)}%`;
-
-  ui.budgetBox.innerHTML = `
-    <div class="budget-row"><span>Addresses</span><strong>${state.normalized.valid.length}</strong></div>
-    <div class="budget-row"><span>Calls / address (est.)</span><strong>${provider.freeTier.callsPerAddressEstimate}</strong></div>
-    <div class="budget-row"><span>Total calls (est.)</span><strong>${estimate.totalCalls}</strong></div>
-    <div class="budget-row"><span>Quota window</span><strong>${Core.sanitizeText(limitKind)}</strong></div>
-    <div class="budget-row"><span>Quota reference</span><strong>${Core.sanitizeText(limitValueText)}</strong></div>
-    <div class="budget-row"><span>Usage estimate</span><strong>${Core.sanitizeText(usageText)}</strong></div>
-    <div class="budget-row"><span>Address pacing</span><strong>${SCAN_ADDRESS_DELAY_MS / 1000}s</strong></div>
-    <div class="budget-row"><span>Estimated time</span><strong>${totalEstimatedSeconds}s</strong></div>
-    <div><span class="badge ${statusClass}">${estimate.status.replace('_', ' ')}</span></div>
-  `;
+  return Number((estimate.estimatedSeconds + pacingSeconds).toFixed(1));
 }
 
 function updateAddressState() {
@@ -683,8 +655,6 @@ function updateAddressState() {
   } else {
     ui.invalidPreview.textContent = 'No invalid addresses detected.';
   }
-
-  updateBudgetUI();
 }
 
 function createMetadataAdapter(providerId) {
@@ -715,7 +685,6 @@ async function loadChainOptions() {
     }));
     state.selectedChains = new Set(state.activeChainOptions.map((chain) => chain.chainId));
     renderChainFilter();
-    updateBudgetUI();
   } catch (error) {
     setStatus(error.message || 'Failed to load provider chains.', 'error');
     state.activeChainOptions = [];
@@ -1020,7 +989,7 @@ async function startScan() {
   state.scan.failed = 0;
   state.scan.timestamp = new Date().toISOString();
   state.scan.startedAtMs = Date.now();
-  state.scan.plannedTotalMs = estimateScanTiming(state.scan.total).totalEstimatedSeconds * 1000;
+  state.scan.plannedTotalMs = estimateScanDurationSeconds(state.scan.total) * 1000;
   state.results = new Map(state.normalized.valid.map((address) => [address, createResultEntry(address)]));
 
   setScanControls(true);
@@ -1262,7 +1231,6 @@ function bindEvents() {
     state.providerId = ui.providerSelect.value;
     updateProviderUI();
     await loadChainOptions();
-    updateBudgetUI();
     setStatus(`Provider switched to ${PROVIDERS[state.providerId].name}.`, 'ok');
   });
 
@@ -1278,20 +1246,17 @@ function bindEvents() {
   ui.chainFilter.addEventListener('change', () => {
     const selected = [...ui.chainFilter.selectedOptions].map((option) => option.value);
     state.selectedChains = new Set(selected);
-    updateBudgetUI();
     setStatus(`${selected.length} chain(s) selected.`, 'ok');
   });
 
   ui.chainAllButton.addEventListener('click', () => {
     state.selectedChains = new Set(state.activeChainOptions.map((chain) => chain.chainId));
     renderChainFilter();
-    updateBudgetUI();
   });
 
   ui.chainNoneButton.addEventListener('click', () => {
     state.selectedChains = new Set();
     renderChainFilter();
-    updateBudgetUI();
   });
 
   ui.dustFilterInput.addEventListener('input', () => {
