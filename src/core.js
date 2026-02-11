@@ -105,6 +105,27 @@ function safeNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function formatDurationMs(value) {
+  const totalMs = Math.max(0, Math.round(safeNumber(value)));
+  const totalSeconds = Math.ceil(totalMs / 1000);
+  if (totalSeconds <= 0) return '0s';
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes < 60) {
+    return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${String(remainingMinutes).padStart(2, '0')}m`;
+}
+
 function defaultSleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -303,6 +324,7 @@ const BalanceScannerCore = {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  formatDurationMs,
   runSequentialWithDelay,
   estimateBudget,
   formatUsd,
@@ -320,6 +342,7 @@ export {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  formatDurationMs,
   runSequentialWithDelay,
   estimateBudget,
   formatUsd,

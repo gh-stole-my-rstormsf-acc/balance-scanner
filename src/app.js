@@ -148,6 +148,9 @@ const state = {
     completed: 0,
     failed: 0,
     timestamp: null,
+    startedAtMs: 0,
+    plannedTotalMs: 0,
+    progressTimerId: null,
   },
   results: new Map(),
   sort: {
@@ -621,11 +624,16 @@ function getBudgetProviderView() {
   };
 }
 
-function updateBudgetUI() {
+function estimateScanTiming(addressCount) {
   const provider = getBudgetProviderView();
-  const estimate = Core.estimateBudget(provider, state.normalized.valid.length);
-  const pacingSeconds = Math.max(0, state.normalized.valid.length - 1) * (SCAN_ADDRESS_DELAY_MS / 1000);
+  const estimate = Core.estimateBudget(provider, addressCount);
+  const pacingSeconds = Math.max(0, addressCount - 1) * (SCAN_ADDRESS_DELAY_MS / 1000);
   const totalEstimatedSeconds = Number((estimate.estimatedSeconds + pacingSeconds).toFixed(1));
+  return { provider, estimate, pacingSeconds, totalEstimatedSeconds };
+}
+
+function updateBudgetUI() {
+  const { provider, estimate, totalEstimatedSeconds } = estimateScanTiming(state.normalized.valid.length);
   const limitKind = provider.freeTier.limitKind;
   const limitValueText = provider.freeTier.limitValue === null ? 'unknown' : String(provider.freeTier.limitValue);
 
@@ -727,7 +735,15 @@ function renderProgress() {
   const completed = state.scan.completed;
   const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   ui.progressFill.style.width = `${pct}%`;
-  ui.progressLabel.textContent = `${completed} / ${total} complete`;
+
+  let label = `${completed} / ${total} complete`;
+  if (state.scan.running && state.scan.startedAtMs > 0 && state.scan.plannedTotalMs > 0) {
+    const elapsedMs = Math.max(0, Date.now() - state.scan.startedAtMs);
+    const remainingMs = Math.max(0, state.scan.plannedTotalMs - elapsedMs);
+    label = `${label} · ~${Core.formatDurationMs(remainingMs)} left`;
+  }
+
+  ui.progressLabel.textContent = label;
 }
 
 function getRowsForRendering() {
@@ -873,6 +889,17 @@ function renderDetails(row) {
 
 function setScanControls(running) {
   state.scan.running = running;
+
+  if (state.scan.progressTimerId !== null) {
+    clearInterval(state.scan.progressTimerId);
+    state.scan.progressTimerId = null;
+  }
+  if (running) {
+    state.scan.progressTimerId = setInterval(() => {
+      renderProgress();
+    }, 1000);
+  }
+
   ui.scanButton.disabled = running;
   ui.stopButton.disabled = !running;
   ui.exportButton.disabled = running || [...state.results.values()].filter((row) => row.status === 'success').length === 0;
@@ -990,6 +1017,8 @@ async function startScan() {
   state.scan.completed = 0;
   state.scan.failed = 0;
   state.scan.timestamp = new Date().toISOString();
+  state.scan.startedAtMs = Date.now();
+  state.scan.plannedTotalMs = estimateScanTiming(state.scan.total).totalEstimatedSeconds * 1000;
   state.results = new Map(state.normalized.valid.map((address) => [address, createResultEntry(address)]));
 
   setScanControls(true);

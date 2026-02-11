@@ -174,3 +174,14 @@ test('runSequentialWithDelay stops quickly when requested', async () => {
   assert.deepEqual(seen, ['a']);
   assert.deepEqual(sleepCalls, [200]);
 });
+
+test('formatDurationMs renders short durations', () => {
+  assert.equal(core.formatDurationMs(0), '0s');
+  assert.equal(core.formatDurationMs(999), '1s');
+  assert.equal(core.formatDurationMs(9_100), '10s');
+});
+
+test('formatDurationMs renders minute and hour durations', () => {
+  assert.equal(core.formatDurationMs(65_000), '1m 05s');
+  assert.equal(core.formatDurationMs(3_726_000), '1h 02m');
+});
