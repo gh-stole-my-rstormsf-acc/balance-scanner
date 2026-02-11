@@ -105,6 +105,36 @@ function safeNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function defaultSleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function runSequentialWithDelay(items, worker, options = {}) {
+  const list = [...(items || [])];
+  const delayMs = Math.max(0, Math.floor(safeNumber(options.delayMs)));
+  const sleepStepMs = Math.max(1, Math.floor(safeNumber(options.sleepStepMs || 250)));
+  const sleep = typeof options.sleep === 'function' ? options.sleep : defaultSleep;
+  const shouldStop = typeof options.shouldStop === 'function' ? options.shouldStop : () => false;
+
+  for (let index = 0; index < list.length; index += 1) {
+    if (shouldStop()) return;
+    await worker(list[index], index);
+
+    const hasNext = index < list.length - 1;
+    if (!hasNext || delayMs <= 0 || shouldStop()) continue;
+
+    let remaining = delayMs;
+    while (remaining > 0) {
+      if (shouldStop()) return;
+      const chunk = Math.min(sleepStepMs, remaining);
+      await sleep(chunk);
+      remaining -= chunk;
+    }
+  }
+}
+
 function estimateBudget(provider, addressCount) {
   const callsPerAddress = safeNumber(provider?.freeTier?.callsPerAddressEstimate || 0);
   const totalCalls = Math.max(0, Math.round(addressCount * callsPerAddress));
@@ -273,6 +303,7 @@ const BalanceScannerCore = {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  runSequentialWithDelay,
   estimateBudget,
   formatUsd,
   sortRows,
@@ -289,6 +320,7 @@ export {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  runSequentialWithDelay,
   estimateBudget,
   formatUsd,
   sortRows,

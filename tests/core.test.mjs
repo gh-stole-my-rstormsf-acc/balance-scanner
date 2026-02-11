@@ -135,3 +135,42 @@ test('sortRows sorts descending numeric by default', () => {
   const sorted = core.sortRows(rows, { key: 'totalUsdValue', direction: 'desc' });
   assert.equal(sorted.map((r) => r.address).join(','), 'b,a,c');
 });
+
+test('runSequentialWithDelay spaces jobs between items', async () => {
+  const seen = [];
+  const sleepCalls = [];
+
+  await core.runSequentialWithDelay(['a', 'b', 'c'], async (item) => {
+    seen.push(item);
+  }, {
+    delayMs: 1_000,
+    sleepStepMs: 1_000,
+    sleep: async (ms) => {
+      sleepCalls.push(ms);
+    },
+  });
+
+  assert.deepEqual(seen, ['a', 'b', 'c']);
+  assert.deepEqual(sleepCalls, [1_000, 1_000]);
+});
+
+test('runSequentialWithDelay stops quickly when requested', async () => {
+  const seen = [];
+  const sleepCalls = [];
+  let stop = false;
+
+  await core.runSequentialWithDelay(['a', 'b', 'c'], async (item) => {
+    seen.push(item);
+  }, {
+    delayMs: 1_000,
+    sleepStepMs: 200,
+    shouldStop: () => stop,
+    sleep: async (ms) => {
+      sleepCalls.push(ms);
+      stop = true;
+    },
+  });
+
+  assert.deepEqual(seen, ['a']);
+  assert.deepEqual(sleepCalls, [200]);
+});

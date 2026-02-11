@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import * as Core from './core.js';
 const RELEASE_PHASE = 1;
+const SCAN_ADDRESS_DELAY_MS = 10_000;
 
 const CHAIN_NAMES = {
   eth: 'Ethereum',
@@ -594,6 +595,7 @@ function renderProviderInfo() {
     <div class="row"><span>Quota window</span><strong>${Core.sanitizeText(provider.freeTier.limitKind)}</strong></div>
     <div class="row"><span>Quota reference</span><strong>${Core.sanitizeText(limitValueText)}</strong></div>
     <div class="row"><span>Rate limit/s</span><strong>${provider.freeTier.rateLimitPerSec ?? 'unknown'}</strong></div>
+    <div class="row"><span>Address pacing</span><strong>${SCAN_ADDRESS_DELAY_MS / 1000}s between scans</strong></div>
     <div class="row"><span>Key link</span><strong><a href="${provider.signupUrl}" target="_blank" rel="noopener noreferrer">open</a></strong></div>
     <div class="row"><span>Docs</span><strong><a href="${provider.docsUrl}" target="_blank" rel="noopener noreferrer">open</a></strong></div>
     <div class="footnote">${Core.sanitizeText(provider.caveat)}</div>
@@ -622,6 +624,8 @@ function getBudgetProviderView() {
 function updateBudgetUI() {
   const provider = getBudgetProviderView();
   const estimate = Core.estimateBudget(provider, state.normalized.valid.length);
+  const pacingSeconds = Math.max(0, state.normalized.valid.length - 1) * (SCAN_ADDRESS_DELAY_MS / 1000);
+  const totalEstimatedSeconds = Number((estimate.estimatedSeconds + pacingSeconds).toFixed(1));
   const limitKind = provider.freeTier.limitKind;
   const limitValueText = provider.freeTier.limitValue === null ? 'unknown' : String(provider.freeTier.limitValue);
 
@@ -640,7 +644,8 @@ function updateBudgetUI() {
     <div class="budget-row"><span>Quota window</span><strong>${Core.sanitizeText(limitKind)}</strong></div>
     <div class="budget-row"><span>Quota reference</span><strong>${Core.sanitizeText(limitValueText)}</strong></div>
     <div class="budget-row"><span>Usage estimate</span><strong>${Core.sanitizeText(usageText)}</strong></div>
-    <div class="budget-row"><span>Estimated time</span><strong>${estimate.estimatedSeconds}s</strong></div>
+    <div class="budget-row"><span>Address pacing</span><strong>${SCAN_ADDRESS_DELAY_MS / 1000}s</strong></div>
+    <div class="budget-row"><span>Estimated time</span><strong>${totalEstimatedSeconds}s</strong></div>
     <div><span class="badge ${statusClass}">${estimate.status.replace('_', ' ')}</span></div>
   `;
 }
@@ -988,15 +993,19 @@ async function startScan() {
   state.results = new Map(state.normalized.valid.map((address) => [address, createResultEntry(address)]));
 
   setScanControls(true);
-  setStatus(`Scanning ${state.scan.total} address(es) with ${PROVIDERS[state.providerId].name}...`, 'ok');
+  setStatus(
+    `Scanning ${state.scan.total} address(es) with ${PROVIDERS[state.providerId].name} (${SCAN_ADDRESS_DELAY_MS / 1000}s pacing)...`,
+    'ok'
+  );
   renderProgress();
   renderResults();
 
-  const provider = PROVIDERS[state.providerId];
-
   try {
-    await runWithConcurrency(state.normalized.valid, provider.defaultConcurrency, async (address) => {
+    await Core.runSequentialWithDelay(state.normalized.valid, async (address) => {
       await scanAddress(adapter, address);
+    }, {
+      delayMs: SCAN_ADDRESS_DELAY_MS,
+      shouldStop: () => state.scan.stopRequested,
     });
   } finally {
     setScanControls(false);
