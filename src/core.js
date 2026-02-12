@@ -13,6 +13,53 @@ const CSV_HEADERS = [
   'token_amount_decimal',
   'token_usd_value',
 ];
+const TRUEBLOCKS_FALLBACK_CHAINS = [
+  {
+    chainId: 'mainnet',
+    chainName: 'Ethereum',
+    nativeSymbol: 'ETH',
+    isTestnet: false,
+    enabledByDefault: true,
+  },
+];
+const CHAIN_ID_BY_NUMERIC = {
+  1: 'mainnet',
+  10: 'optimism',
+  56: 'bsc',
+  100: 'gnosis',
+  137: 'polygon',
+  250: 'fantom',
+  8453: 'base',
+  42161: 'arbitrum',
+  43114: 'avalanche',
+};
+const CHAIN_META_BY_ID = {
+  mainnet: { chainName: 'Ethereum', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  eth: { chainName: 'Ethereum', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  ethereum: { chainName: 'Ethereum', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  base: { chainName: 'Base', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  optimism: { chainName: 'Optimism', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  arbitrum: { chainName: 'Arbitrum', nativeSymbol: 'ETH', coinGeckoId: 'ethereum' },
+  bsc: { chainName: 'BNB Chain', nativeSymbol: 'BNB', coinGeckoId: 'binancecoin' },
+  binance: { chainName: 'BNB Chain', nativeSymbol: 'BNB', coinGeckoId: 'binancecoin' },
+  polygon: { chainName: 'Polygon', nativeSymbol: 'POL', coinGeckoId: 'matic-network' },
+  matic: { chainName: 'Polygon', nativeSymbol: 'POL', coinGeckoId: 'matic-network' },
+  avalanche: { chainName: 'Avalanche', nativeSymbol: 'AVAX', coinGeckoId: 'avalanche-2' },
+  avax: { chainName: 'Avalanche', nativeSymbol: 'AVAX', coinGeckoId: 'avalanche-2' },
+  fantom: { chainName: 'Fantom', nativeSymbol: 'FTM', coinGeckoId: 'fantom' },
+  gnosis: { chainName: 'Gnosis', nativeSymbol: 'XDAI', coinGeckoId: 'xdai' },
+  xdai: { chainName: 'Gnosis', nativeSymbol: 'XDAI', coinGeckoId: 'xdai' },
+};
+const COINGECKO_BY_SYMBOL = {
+  ETH: 'ethereum',
+  WETH: 'ethereum',
+  BNB: 'binancecoin',
+  MATIC: 'matic-network',
+  POL: 'matic-network',
+  AVAX: 'avalanche-2',
+  FTM: 'fantom',
+  XDAI: 'xdai',
+};
 
 function parseManualAddressInput(raw) {
   if (!raw) return [];
@@ -103,6 +150,239 @@ function normalizeAddresses(candidates) {
 function safeNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function toRawFromDecimal(decimalValue, decimals) {
+  const text = String(decimalValue ?? '0').trim();
+  if (!text || Number.isNaN(Number(text))) return '0';
+  const [wholeRaw, fractionRaw = ''] = text.split('.');
+  const whole = wholeRaw.replace(/\D/g, '') || '0';
+  const fraction = fractionRaw.replace(/\D/g, '').slice(0, decimals).padEnd(decimals, '0');
+  const merged = `${whole}${fraction}`.replace(/^0+(?=\d)/, '');
+  return merged || '0';
+}
+
+function toDecimalFromRaw(raw, decimals) {
+  const digits = String(raw || '0').replace(/\D/g, '') || '0';
+  if (decimals <= 0) return digits;
+  const padded = digits.padStart(decimals + 1, '0');
+  const whole = padded.slice(0, -decimals);
+  const fraction = padded.slice(-decimals).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function normalizeTrueBlocksChainId(rawChainId, rawNumericId) {
+  const explicit = String(rawChainId || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const asNumber = Number(rawNumericId);
+  if (Number.isFinite(asNumber) && CHAIN_ID_BY_NUMERIC[asNumber]) {
+    return CHAIN_ID_BY_NUMERIC[asNumber];
+  }
+  return '';
+}
+
+function cloneTrueBlocksFallbackChains() {
+  return TRUEBLOCKS_FALLBACK_CHAINS.map((chain) => ({ ...chain }));
+}
+
+function isLikelyTestnet(chainId) {
+  return /(test|goerli|sepolia|holesky|mumbai|amoy|dev)/i.test(String(chainId || ''));
+}
+
+function normalizeTrueBlocksChains(payload) {
+  const candidates = [];
+  const collect = (item) => {
+    if (!item || typeof item !== 'object') return;
+    if (Array.isArray(item.chains)) {
+      candidates.push(...item.chains);
+    }
+    if (item.chain !== undefined || item.chainId !== undefined || item.symbol !== undefined) {
+      candidates.push(item);
+    }
+  };
+
+  if (Array.isArray(payload?.data)) payload.data.forEach(collect);
+  if (Array.isArray(payload)) payload.forEach(collect);
+  collect(payload);
+
+  const seen = new Set();
+  const normalized = [];
+  for (const candidate of candidates) {
+    const chainId = normalizeTrueBlocksChainId(
+      candidate.chain ?? candidate.chainName ?? candidate.name,
+      candidate.chainId
+    );
+    if (!chainId || seen.has(chainId)) continue;
+    seen.add(chainId);
+
+    const chainMeta = CHAIN_META_BY_ID[chainId] || null;
+    const chainName = String(candidate.chainName || candidate.name || chainMeta?.chainName || chainId);
+    const nativeSymbol = String(candidate.symbol || chainMeta?.nativeSymbol || '').toUpperCase() || 'ETH';
+    const testnet = isLikelyTestnet(chainId);
+
+    normalized.push({
+      chainId,
+      chainName,
+      nativeSymbol,
+      isTestnet: testnet,
+      enabledByDefault: !testnet,
+    });
+  }
+
+  if (normalized.length === 0) {
+    return cloneTrueBlocksFallbackChains();
+  }
+  return normalized;
+}
+
+function normalizeTrueBlocksStateBalance(payload) {
+  const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+  const row = rows.find((item) =>
+    item && typeof item === 'object' && (item.balance !== undefined || item.ether !== undefined)
+  );
+  if (!row) return null;
+
+  const amountRaw = row.balance !== undefined && row.balance !== null
+    ? String(row.balance)
+    : '0';
+
+  let amountDecimal = row.ether !== undefined && row.ether !== null
+    ? String(row.ether)
+    : '';
+
+  if (!amountDecimal || Number.isNaN(Number(amountDecimal))) {
+    amountDecimal = toDecimalFromRaw(amountRaw, 18);
+  }
+
+  return {
+    amountRaw,
+    amountDecimal,
+    amountNumber: safeNumber(amountDecimal),
+  };
+}
+
+function coinGeckoIdForNativeAsset(chainId, nativeSymbol) {
+  const chainKey = String(chainId || '').trim().toLowerCase();
+  if (CHAIN_META_BY_ID[chainKey]?.coinGeckoId) {
+    return CHAIN_META_BY_ID[chainKey].coinGeckoId;
+  }
+  const symbolKey = String(nativeSymbol || '').trim().toUpperCase();
+  if (COINGECKO_BY_SYMBOL[symbolKey]) {
+    return COINGECKO_BY_SYMBOL[symbolKey];
+  }
+  return null;
+}
+
+async function fetchCoinGeckoSimplePrices(ids, options = {}) {
+  const uniqueIds = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const pricesById = new Map();
+  const errors = [];
+  if (uniqueIds.length === 0) {
+    return { pricesById, errors };
+  }
+
+  const fetchImpl = typeof options.fetchImpl === 'function'
+    ? options.fetchImpl
+    : fetch;
+  const batchSize = Math.max(1, Math.floor(safeNumber(options.batchSize || 30)));
+
+  for (let i = 0; i < uniqueIds.length; i += batchSize) {
+    const batch = uniqueIds.slice(i, i + batchSize);
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(batch.join(','))}&vs_currencies=usd`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+        },
+      });
+
+      if (!response?.ok) {
+        const status = response?.status ?? 'unknown';
+        let body = '';
+        try {
+          body = typeof response?.text === 'function' ? await response.text() : '';
+        } catch (_error) {
+          body = '';
+        }
+        errors.push(`CoinGecko request failed (${status})${body ? `: ${body.slice(0, 120)}` : ''}`);
+        continue;
+      }
+
+      const json = await response.json();
+      for (const id of batch) {
+        const usd = Number(json?.[id]?.usd);
+        if (Number.isFinite(usd)) {
+          pricesById.set(id, usd);
+        }
+      }
+    } catch (error) {
+      errors.push(`CoinGecko request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
+
+  return { pricesById, errors };
+}
+
+function summarizeTrueBlocksAttempts(attempts) {
+  const chains = [];
+  const warnings = [];
+  for (const attempt of attempts || []) {
+    if (attempt?.success) {
+      chains.push({
+        chainId: String(attempt.chainId || ''),
+        chainName: String(attempt.chainName || attempt.chainId || 'Unknown'),
+        nativeSymbol: String(attempt.nativeSymbol || 'ETH'),
+        amountRaw: String(attempt.amountRaw || '0'),
+        amountDecimal: String(attempt.amountDecimal || '0'),
+        amountNumber: safeNumber(attempt.amountNumber),
+        usdValueNumber: attempt.priceUnavailable ? 0 : safeNumber(attempt.usdValueNumber),
+        usdValue: String(attempt.usdValue || '0'),
+        priceUnavailable: Boolean(attempt.priceUnavailable),
+        tokenCount: safeNumber(attempt.tokenCount || 1),
+      });
+      continue;
+    }
+    if (attempt?.chainId || attempt?.error) {
+      warnings.push(`${String(attempt.chainId || 'unknown')}: ${String(attempt.error || 'unknown error')}`);
+    }
+  }
+
+  chains.sort((a, b) => b.usdValueNumber - a.usdValueNumber);
+  return {
+    chains,
+    warnings,
+    allFailed: chains.length === 0,
+  };
+}
+
+function buildExportRecords(entries, options = {}) {
+  const timestamp = String(options.timestamp || new Date().toISOString());
+  const providerId = String(options.providerId || '');
+  const records = [];
+  for (const entry of entries || []) {
+    if (entry?.status !== 'success') continue;
+    if (entry?.tokenError) continue;
+    const tokens = Array.isArray(entry?.tokens) ? entry.tokens : [];
+    for (const token of tokens) {
+      records.push({
+        scan_timestamp_utc: timestamp,
+        provider_id: providerId,
+        address: String(entry.address || ''),
+        chain_id: String(token.chainId || ''),
+        chain_name: String(token.chainName || ''),
+        token_address: String(token.tokenAddress || ''),
+        token_symbol: String(token.tokenSymbol || ''),
+        token_name: String(token.tokenName || ''),
+        token_decimals: String(token.tokenDecimals ?? ''),
+        token_amount_raw: String(token.amountRaw || '0'),
+        token_amount_decimal: String(token.amountDecimal || '0'),
+        token_usd_value: String(token.usdValue || ''),
+      });
+    }
+  }
+  return records;
 }
 
 function formatDurationMs(value) {
@@ -324,12 +604,20 @@ const BalanceScannerCore = {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  toRawFromDecimal,
+  toDecimalFromRaw,
   formatDurationMs,
   runSequentialWithDelay,
   estimateBudget,
   formatUsd,
   sortRows,
   toCsv,
+  normalizeTrueBlocksChains,
+  normalizeTrueBlocksStateBalance,
+  coinGeckoIdForNativeAsset,
+  fetchCoinGeckoSimplePrices,
+  summarizeTrueBlocksAttempts,
+  buildExportRecords,
   filterTokensByDust,
   computeDashboard,
   sanitizeText,
@@ -342,12 +630,20 @@ export {
   extractCsvAddresses,
   normalizeAddresses,
   safeNumber,
+  toRawFromDecimal,
+  toDecimalFromRaw,
   formatDurationMs,
   runSequentialWithDelay,
   estimateBudget,
   formatUsd,
   sortRows,
   toCsv,
+  normalizeTrueBlocksChains,
+  normalizeTrueBlocksStateBalance,
+  coinGeckoIdForNativeAsset,
+  fetchCoinGeckoSimplePrices,
+  summarizeTrueBlocksAttempts,
+  buildExportRecords,
   filterTokensByDust,
   computeDashboard,
   sanitizeText,

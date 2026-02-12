@@ -1,6 +1,6 @@
 # PRD: Multi-Chain Wallet Balance Scanner
 
-**Status:** Draft v3.1
+**Status:** Draft v3.2
 **Author:** ralph
 **Date:** 2026-02-11
 **Architecture:** Provider-agnostic, user-selectable API backend
@@ -23,7 +23,7 @@ No single API provider fits every user. Some users have DeBank keys, others pref
 1. **Provider-aware scan SLA for 100 addresses:**
    - **< 2 minutes** on single-call providers (Ankr, DeBank)
    - **< 5 minutes** on per-chain providers (Moralis, Covalent)
-2. **Zero backend dependency** - runs entirely client-side as a single HTML file. No server, no build step.
+2. **Zero backend dependency** - runs entirely client-side as a static app build. No server runtime required.
 3. **Free-first provider model** - default to a free-tier provider (Ankr). Users can switch providers at runtime. Each provider adapter normalizes to a common model.
 4. **Broad EVM chain coverage** - leverage each provider's chain support (roughly 20 to 200+ chains depending on provider).
 5. **Exportable results** - CSV export of scanned data for downstream analysis.
@@ -33,7 +33,7 @@ No single API provider fits every user. Some users have DeBank keys, others pref
 
 ## Release Scope by Phase
 
-- **Phase 1 (v1.0):** Ankr + Moralis adapters.
+- **Phase 1 (v1.0):** Ankr + Moralis + TrueBlocks (local daemon, native-balance MVP) adapters.
 - **Phase 2 (v1.1):** Add Covalent + Alchemy adapters.
   - Alchemy integration is **raw HTTP only**. No dependency on deprecated JS SDK.
 - **Phase 3 (v1.2):** Add DeBank adapter.
@@ -52,6 +52,7 @@ Provider selector behavior is phase-aware: each release shows only providers imp
 - **Cross-provider aggregation** - One provider per scan session.
 - **ENS name resolution** - Out of scope for v1.
 - **Non-EVM chains (BTC/Solana/etc.)** - Out of scope for v1.
+- **TrueBlocks token-level holdings in v1** - Out of scope. TrueBlocks integration is native-balance-first in this phase.
 
 ---
 
@@ -85,13 +86,13 @@ Provider selector behavior is phase-aware: each release shows only providers imp
 | P0-1 | **CSV Upload & Parse** | Accept `.csv` via drag-drop or picker. Parse first column or `address` column. Deduplicate. Validate format. Show valid/invalid counts before scan. |
 | P0-2 | **Manual Address Input** | Textarea accepts one-per-line, comma-separated, or mixed input. Uses same validation as CSV path. |
 | P0-3 | **Provider Selection (Phase-Aware)** | Selector shows only providers implemented for the current phase, ordered by tier (`FREE`, `FREEMIUM`, `PAID`) and recommendation. Default: Ankr when available. Option row shows tier badge and chain count. Selection updates key label/help/free-tier info. |
-| P0-4 | **API Key Input** | Provider-specific key/token field. Label updates by provider. Key held in JS memory only. Free/freemium providers show a "Get key" link. |
-| P0-4a | **Session Budget Estimator** | Before scan, display a **session estimate** (address count x estimated calls-per-address). Must state estimate does not track prior usage and assumes unknown existing quota consumption. For Covalent, show that free quota is a signup pool (not daily). |
-| P0-5 | **Multi-Chain Balance Fetch** | Provider adapters normalize data to common `BalanceResult` schema. Results stream in as addresses complete. |
+| P0-4 | **Provider Credential Input** | Provider-specific input field. Hosted providers use API key/token; TrueBlocks uses a daemon base URL (default `http://127.0.0.1:8080`). Value held in JS memory only. |
+| P0-4a | **Progress ETA** | During scan, display `completed/total` plus an approximate time remaining value based on provider timing assumptions and enforced address pacing. |
+| P0-5 | **Multi-Chain Balance Fetch** | Provider adapters normalize data to common `BalanceResult` schema. Results stream in as addresses complete. TrueBlocks uses auto chain discovery and falls back to Ethereum-only when discovery is unavailable. |
 | P0-6 | **Token-Level Detail (Lazy in UI)** | Per-token data is fetched lazily on row expand for table rendering efficiency. |
 | P0-7 | **Rate Limit Handling** | Provider-aware queue with provider default concurrency and exponential backoff on 429/rate-limit responses. Show `completed/total` progress. |
 | P0-8 | **Results Table** | Sortable columns: Address, Total USD Value, Chains Active, Token Count, Top Chain. Expand row for per-chain/per-token detail. |
-| P0-9 | **CSV Export (Full Mode)** | Export workflow must prefetch missing token data for unexpanded addresses before file generation. Export generation blocks until prefetch completes or fails. If some addresses fail during prefetch, export includes successful rows and surfaces a clear failure summary. CSV columns: `scan_timestamp_utc,provider_id,address,chain_id,chain_name,token_address,token_symbol,token_name,token_decimals,token_amount_raw,token_amount_decimal,token_usd_value`. |
+| P0-9 | **CSV Export (Full Mode)** | Export workflow must prefetch missing token data for unexpanded addresses before file generation. Export generation blocks until prefetch completes or fails. If some addresses fail during prefetch, export includes successful rows and surfaces a clear failure summary. CSV columns: `scan_timestamp_utc,provider_id,address,chain_id,chain_name,token_address,token_symbol,token_name,token_decimals,token_amount_raw,token_amount_decimal,token_usd_value`. In TrueBlocks mode, export emits native rows with `token_address=native`; missing USD prices remain `N/A`/blank without failing export. |
 | P0-10 | **Error Handling** | Per-address error state with retry. One address failure does not halt scan. Completion summary includes failures and retry outcomes. |
 
 ### P1 - Nice to Have
@@ -136,6 +137,20 @@ Ordered by recommendation: free-tier providers first for 50-500 address use case
 | **Tradeoff** | Simpler integration, fewer chains | More chains, auth complexity |
 | **Get Key** | [ankr.com/rpc](https://www.ankr.com/rpc/) | [dashboard.alchemy.com/signup](https://dashboard.alchemy.com/signup) |
 
+### Local Provider - TrueBlocks (Phase 1, native-balance MVP)
+
+| | TrueBlocks |
+|---|---|
+| **Tier** | `FREE` (local daemon) |
+| **Phase** | Phase 1 |
+| **Chain Coverage** | Auto-discovered from daemon (`/status?chains=true`) |
+| **Multi-Chain in 1 Call** | No (per-chain state calls with bounded fanout) |
+| **USD Prices Included** | Via CoinGecko Simple Price API |
+| **Auth Method** | No API key; configurable daemon URL |
+| **Default Endpoint** | `http://127.0.0.1:8080` |
+| **Tradeoff** | No provider key/rate-limit model, but requires local daemon setup |
+| **Setup** | [docs.trueblocks.io/install](https://docs.trueblocks.io/install/) |
+
 ### Tier 2 - Freemium, Per-Chain Calls
 
 | | Moralis | Covalent / GoldRush |
@@ -174,6 +189,7 @@ Ordered by recommendation: free-tier providers first for 50-500 address use case
 
 ```
 Ankr Advanced      FREE       ~20 chains   (default)
+TrueBlocks (Local) FREE       local daemon native-balance MVP
 Moralis            FREEMIUM   ~15 chains
 ```
 
@@ -181,6 +197,7 @@ Moralis            FREEMIUM   ~15 chains
 
 ```
 Ankr Advanced      FREE       ~20 chains   (default)
+TrueBlocks (Local) FREE       local daemon native-balance MVP
 Alchemy            FREE       ~30 chains
 Moralis            FREEMIUM   ~15 chains
 Covalent/GoldRush  FREEMIUM   100+ chains
@@ -190,11 +207,12 @@ DeBank Pro         PAID       200+ chains
 ### Provider Guidance
 
 - "Just want it to work" -> Ankr
+- "Need local-first / no provider key" -> TrueBlocks (native-balance MVP)
 - "Need 100+ chains" -> Covalent (freemium) or DeBank (paid)
 - "Prefer aggressive spam filtering" -> Moralis
 - "Already have provider X key" -> choose that provider
 
-### Free-Tier Budget Estimator Logic
+### Scan Duration / ETA Logic
 
 Before scan, show:
 
@@ -202,15 +220,13 @@ Before scan, show:
 Addresses:                    {N}
 Provider:                     {name}
 Estimated calls per address:  {provider estimate}
-Estimated total calls:        {N * calls_per_address_estimate}
-Quota window:                 {daily | lifetime signup pool | none | unknown}
-Quota reference value:        {provider limit value or unknown}
-Usage estimate:               {estimated / limit}% when limit known
-Assumption:                   does not track prior usage
-Status:                       Within estimate | Near limit | Likely exceeds
+Estimated provider call time: {function of calls, concurrency, effective rate limit}
+Address pacing overhead:      {(N - 1) * pacing_delay_seconds}
+Planned duration:             {provider time + pacing overhead}
+During scan:                  show ~time left (planned_duration - elapsed)
 ```
 
-For per-chain providers, estimator assumes active-chain discovery and an average of 3-5 active chains per address.
+For per-chain providers, estimate uses chain-selection-aware call assumptions.
 
 ---
 
@@ -238,10 +254,10 @@ Each adapter normalizes provider-specific responses into a common schema.
 
 ```typescript
 interface ProviderAdapter {
-  id: string;                          // 'ankr' | 'alchemy' | 'moralis' | 'covalent' | 'debank'
+  id: string;                          // 'ankr' | 'trueblocks' | 'alchemy' | 'moralis' | 'covalent' | 'debank'
   name: string;
   tier: 'free' | 'freemium' | 'paid';
-  keyLabel: string;
+  keyLabel: string;                    // key label or base-url label by provider
   keyPlaceholder: string;
   signupUrl: string;
   docsUrl: string;
@@ -257,7 +273,7 @@ interface ProviderAdapter {
     rateLimitPerSec: number | null;
   };
 
-  validateKey(key: string): Promise<boolean>;
+  validateKey(input: string): Promise<boolean>; // key validation or endpoint health validation
   getBalance(address: string): Promise<BalanceResult>;
   getTokens(address: string): Promise<TokenResult[]>;
   getSupportedChains(): Promise<ChainInfo[]>;
@@ -325,6 +341,14 @@ interface TokenResult {
 - **Auth:** `X-API-Key` header.
 - **Notes:** dynamic active-chain discovery is required (no hardcoded common-chain list).
 
+#### TrueBlocks (Phase 1, FREE local daemon)
+
+- **Health / chain discovery:** `/status?chains=true` with Ethereum-only fallback when discovery fails.
+- **Balances (MVP):** per-chain `/state?addrs={address}&parts=balance&ether=true&chain={chain}`.
+- **USD pricing:** CoinGecko Simple Price API (best-effort, non-blocking).
+- **Auth:** none (local daemon endpoint URL).
+- **Notes:** token-level holdings are explicitly out of scope in this phase; export emits native rows with `token_address=native`.
+
 #### Covalent / GoldRush (Phase 2, FREEMIUM)
 
 - **Discovery:** determine active chains before balance calls.
@@ -350,6 +374,7 @@ interface TokenResult {
 | Provider | Tier | Default Concurrency | Rationale |
 |----------|------|-------------------|-----------|
 | Ankr | FREE | 10 | ~30 req/s and 1 call/address |
+| TrueBlocks | FREE (local) | 3 | bounded per-chain fanout against local daemon |
 | Alchemy | FREE | 8 | multi-chain path with CU limits |
 | Moralis | FREEMIUM | 5 | per-chain fanout and CU budgeting |
 | Covalent | FREEMIUM | 2 | strict 4 req/s free limit |
@@ -357,15 +382,16 @@ interface TokenResult {
 
 ### Key Technical Decisions
 
-- **No framework** - Vanilla JS + CSS, single file, no build step.
-- **PapaParse via CDN** - only external dependency.
+- **No framework runtime** - Vanilla JS + CSS with modular Vite build output.
+- **PapaParse dependency** - used for CSV parsing in the modular build.
 - **Adapter pattern** - provider logic isolated by class.
 - **UI lazy loading** - token detail fetched on row expand.
 - **Export prefetch** - CSV export fetches missing token data before generation.
 - **Provider-aware queue** - provider-specific concurrency and backoff.
 - **Active-chain discovery** - required for Moralis/Covalent to limit call volume.
 - **Precision-safe model** - canonical monetary/token values stored as strings; numbers are derived UI helpers only.
-- **Session-only budgeting** - estimator never claims exact remaining quota.
+- **Planned-duration ETA** - remaining time is approximate and derived from provider assumptions plus address pacing.
+- **Local-provider mode** - TrueBlocks is first-class with endpoint validation and graceful partial-failure handling.
 
 ---
 
@@ -396,11 +422,13 @@ interface TokenResult {
 
 - SLA is provider-aware (`<2 min` single-call, `<5 min` per-chain).
 - Export is full mode with prefetch-before-download.
-- Budgeting is session estimate only with unknown prior usage assumption.
+- Progress ETA is a planned-duration estimate, not a real-time quota tracker.
 - Canonical value types are precision-safe strings.
 - Alchemy remains in Phase 2 using raw HTTP.
 - Export includes `scan_timestamp_utc` and `provider_id`.
 - Moralis/Covalent chain selection uses dynamic active-chain discovery.
+- TrueBlocks is a first-class optional local provider in Phase 1 (daemon URL input, auto multi-chain attempt, Ethereum fallback).
+- TrueBlocks USD pricing uses CoinGecko in best-effort mode; missing prices never fail scan/export.
 - ENS and non-EVM support are out of scope for v1.
 
 ### Remaining Open Questions
@@ -414,9 +442,9 @@ interface TokenResult {
 ## Timeline Considerations
 
 - No hard deadline; internal/personal tooling.
-- Single-file delivery means no deployment pipeline requirement.
+- Modular Vite delivery with GitHub Pages deployment pipeline.
 - Release strategy is additive by phase; adapter additions must not break existing adapters.
-- Phase 1 prioritizes zero-cost usability (Ankr + Moralis).
+- Phase 1 prioritizes zero-cost usability (Ankr + Moralis + optional local TrueBlocks).
 
 ---
 
@@ -437,6 +465,15 @@ interface TokenResult {
 - **Endpoints:** `getWalletActiveChains`, `getWalletTokenBalancesPrice`
 - **Get Key:** [admin.moralis.com](https://admin.moralis.com/)
 - **Docs:** [moralis wallet token balances price](https://docs.moralis.com/web3-data-api/evm/reference/wallet-api/get-wallet-token-balances-price)
+
+### TrueBlocks (FREE local daemon, Phase 1)
+
+- **Base URL:** `http://127.0.0.1:8080` (configurable)
+- **Auth:** none
+- **Endpoints:** `/status?chains=true`, `/state?addrs=...&parts=balance&ether=true&chain=...`
+- **Pricing:** CoinGecko Simple Price API (best-effort only)
+- **Setup:** [docs.trueblocks.io/install](https://docs.trueblocks.io/install/)
+- **Docs:** [docs.trueblocks.io/api](https://docs.trueblocks.io/api/)
 
 ### Covalent / GoldRush (FREEMIUM, Phase 2)
 

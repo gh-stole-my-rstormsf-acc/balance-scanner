@@ -2,10 +2,14 @@ import Papa from 'papaparse';
 import * as Core from './core.js';
 const RELEASE_PHASE = 1;
 const SCAN_ADDRESS_DELAY_MS = 10_000;
+const TRUEBLOCKS_DEFAULT_BASE_URL = 'http://127.0.0.1:8080';
+const TRUEBLOCKS_CHAIN_CONCURRENCY = 3;
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 const CHAIN_NAMES = {
+  mainnet: 'Ethereum',
   eth: 'Ethereum',
+  ethereum: 'Ethereum',
   bsc: 'BNB Chain',
   polygon: 'Polygon',
   avalanche: 'Avalanche',
@@ -39,11 +43,37 @@ const PROVIDERS = {
       rateLimitPerSec: 30,
     },
   },
+  trueblocks: {
+    id: 'trueblocks',
+    name: 'TrueBlocks (Local)',
+    tier: 'FREE',
+    recommendationRank: 1,
+    phase: 1,
+    supportedChainCount: 8,
+    supportsMultiChainCall: false,
+    caveat: 'Runs against your local TrueBlocks daemon. Native balances only in this MVP provider.',
+    keyLabel: 'TrueBlocks Base URL',
+    keyPlaceholder: TRUEBLOCKS_DEFAULT_BASE_URL,
+    defaultInputValue: TRUEBLOCKS_DEFAULT_BASE_URL,
+    signupLabel: 'Setup daemon',
+    signupUrl: 'https://docs.trueblocks.io/install/',
+    docsUrl: 'https://docs.trueblocks.io/api/',
+    defaultConcurrency: 3,
+    freeTier: {
+      available: true,
+      limitKind: 'none',
+      limitValue: null,
+      callsPerAddressEstimate: 3,
+      rateLimitPerSec: 3,
+    },
+    inputMode: 'base_url',
+    isLocalDaemon: true,
+  },
   moralis: {
     id: 'moralis',
     name: 'Moralis',
     tier: 'FREEMIUM',
-    recommendationRank: 1,
+    recommendationRank: 2,
     phase: 1,
     supportedChainCount: 15,
     supportsMultiChainCall: false,
@@ -132,6 +162,7 @@ const PROVIDERS = {
 const state = {
   providerId: 'ankr',
   apiKey: '',
+  providerInputs: {},
   manualCandidates: [],
   csvCandidates: [],
   csvLabelsByAddress: {},
@@ -231,16 +262,21 @@ function logEvent(level, event, payload = {}) {
 }
 
 function createAdapter(providerId, apiKey) {
-  if (!apiKey || !apiKey.trim()) {
-    throw new AppError('API key is required.', 'missing_key', 400);
-  }
   const provider = PROVIDERS[providerId];
   if (!provider || provider.phase > RELEASE_PHASE) {
     throw new AppError('Selected provider is not available in this phase.', 'provider_unavailable', 400);
   }
+  const normalizedInput = String(apiKey || '').trim();
+  if (providerId === 'trueblocks') {
+    return new TrueBlocksAdapter(provider, normalizedInput || provider.defaultInputValue || TRUEBLOCKS_DEFAULT_BASE_URL);
+  }
 
-  if (providerId === 'ankr') return new AnkrAdapter(provider, apiKey.trim());
-  if (providerId === 'moralis') return new MoralisAdapter(provider, apiKey.trim());
+  if (!normalizedInput) {
+    throw new AppError('API key is required.', 'missing_key', 400);
+  }
+
+  if (providerId === 'ankr') return new AnkrAdapter(provider, normalizedInput);
+  if (providerId === 'moralis') return new MoralisAdapter(provider, normalizedInput);
 
   throw new AppError('Provider adapter not implemented in this phase.', 'provider_not_implemented', 501);
 }
@@ -353,7 +389,7 @@ class AnkrAdapter {
       const amountRawCandidate = asset.balanceRawInteger ?? asset.balanceRaw ?? asset.balance_raw;
       const amountRaw = amountRawCandidate !== undefined && amountRawCandidate !== null
         ? String(amountRawCandidate)
-        : toRawFromDecimal(amountDecimal, decimals);
+        : Core.toRawFromDecimal(amountDecimal, decimals);
 
       const usdValueNumber = Core.safeNumber(asset.balanceUsd ?? asset.balance_usd ?? asset.usdValue ?? 0);
 
@@ -509,7 +545,7 @@ class MoralisAdapter {
         const raw = String(row.balance ?? row.amount_raw ?? '0');
         const amountDecimal = row.balance_formatted
           ? String(row.balance_formatted)
-          : toDecimalFromRaw(raw, decimals);
+          : Core.toDecimalFromRaw(raw, decimals);
 
         const usdValueNumber = Core.safeNumber(row.usd_value ?? row.usdValue ?? row.value_usd ?? 0);
 
@@ -558,39 +594,268 @@ class MoralisAdapter {
   }
 }
 
-function toRawFromDecimal(decimalValue, decimals) {
-  const text = String(decimalValue ?? '0').trim();
-  if (!text || Number.isNaN(Number(text))) return '0';
-  const [wholeRaw, fractionRaw = ''] = text.split('.');
-  const whole = wholeRaw.replace(/\D/g, '') || '0';
-  const fraction = fractionRaw.replace(/\D/g, '').slice(0, decimals).padEnd(decimals, '0');
-  const merged = `${whole}${fraction}`.replace(/^0+(?=\d)/, '');
-  return merged || '0';
-}
+class TrueBlocksAdapter {
+  constructor(provider, baseUrl) {
+    this.provider = provider;
+    this.baseUrl = String(baseUrl || TRUEBLOCKS_DEFAULT_BASE_URL).trim();
+    this.discoveredChains = null;
+  }
 
-function toDecimalFromRaw(raw, decimals) {
-  const digits = String(raw || '0').replace(/\D/g, '') || '0';
-  if (decimals <= 0) return digits;
-  const padded = digits.padStart(decimals + 1, '0');
-  const whole = padded.slice(0, -decimals);
-  const fraction = padded.slice(-decimals).replace(/0+$/, '');
-  return fraction ? `${whole}.${fraction}` : whole;
+  async validateKey() {
+    const parsed = this.#parseBaseUrl();
+    if (window.location.protocol === 'https:' && parsed.protocol === 'http:') {
+      throw new AppError(
+        'HTTPS pages cannot call an HTTP local daemon. Run this app locally over HTTP or expose TrueBlocks over HTTPS.',
+        'trueblocks_mixed_content',
+        400
+      );
+    }
+    try {
+      const response = await this.#request('/status?chains=true');
+      this.discoveredChains = Core.normalizeTrueBlocksChains(response);
+      return true;
+    } catch (error) {
+      throw this.#mapSetupError(error);
+    }
+  }
+
+  async getSupportedChains() {
+    if (Array.isArray(this.discoveredChains) && this.discoveredChains.length > 0) {
+      return this.discoveredChains;
+    }
+
+    try {
+      const response = await this.#request('/status?chains=true');
+      const chains = Core.normalizeTrueBlocksChains(response);
+      this.discoveredChains = chains;
+      return chains;
+    } catch (_error) {
+      const fallback = Core.normalizeTrueBlocksChains(null);
+      this.discoveredChains = fallback;
+      return fallback;
+    }
+  }
+
+  async getBalance(address, selectedChains = null) {
+    const discoveredChains = await this.getSupportedChains();
+    const chainFilterSet = buildChainFilterSet(selectedChains);
+    const targets = discoveredChains.filter((chain) => !chainFilterSet || chainFilterSet.has(String(chain.chainId).toLowerCase()));
+
+    if (targets.length === 0) {
+      throw new AppError('No TrueBlocks chains selected. Choose at least one chain in the filter.', 'trueblocks_no_chains', 400);
+    }
+
+    const uniquePriceIds = [...new Set(
+      targets
+        .map((chain) => Core.coinGeckoIdForNativeAsset(chain.chainId, chain.nativeSymbol))
+        .filter(Boolean)
+    )];
+    const pricing = await Core.fetchCoinGeckoSimplePrices(uniquePriceIds);
+
+    const attempts = await this.#mapWithConcurrency(targets, TRUEBLOCKS_CHAIN_CONCURRENCY, async (chain) => {
+      const chainId = String(chain.chainId).toLowerCase();
+      const chainName = String(chain.chainName || detectChainName(chainId));
+      try {
+        const response = await this.#request(
+          `/state?addrs=${encodeURIComponent(address)}&parts=balance&ether=true&chain=${encodeURIComponent(chainId)}`
+        );
+        const normalized = Core.normalizeTrueBlocksStateBalance(response);
+        if (!normalized) {
+          throw new AppError(`Missing balance fields for chain ${chainId}.`, 'trueblocks_balance_missing', 502);
+        }
+
+        const priceId = Core.coinGeckoIdForNativeAsset(chainId, chain.nativeSymbol);
+        const usdPrice = priceId ? pricing.pricesById.get(priceId) : null;
+        const hasPrice = Number.isFinite(usdPrice);
+        const usdValueNumber = hasPrice ? normalized.amountNumber * usdPrice : 0;
+
+        return {
+          success: true,
+          chainId,
+          chainName,
+          nativeSymbol: String(chain.nativeSymbol || 'ETH'),
+          amountRaw: normalized.amountRaw,
+          amountDecimal: normalized.amountDecimal,
+          amountNumber: normalized.amountNumber,
+          usdValueNumber,
+          usdValue: hasPrice ? usdValueNumber.toFixed(8) : '',
+          priceUnavailable: !hasPrice,
+          tokenCount: 1,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          chainId,
+          error: error instanceof Error ? error.message : 'Unknown chain request failure',
+        };
+      }
+    });
+
+    const summary = Core.summarizeTrueBlocksAttempts(attempts);
+    if (pricing.errors.length > 0) {
+      summary.warnings.push('CoinGecko price lookup failed for one or more assets. USD values are shown as N/A where missing.');
+    }
+
+    if (summary.allFailed) {
+      const message = summary.warnings[0] || 'All TrueBlocks chain requests failed.';
+      throw new AppError(message, 'trueblocks_all_failed', 502);
+    }
+
+    const totalUsdValueNumber = summary.chains.reduce((sum, chain) => sum + Core.safeNumber(chain.usdValueNumber), 0);
+    return {
+      address,
+      totalUsdValue: totalUsdValueNumber.toFixed(8),
+      totalUsdValueNumber,
+      chains: summary.chains,
+      tokenCount: summary.chains.length,
+      warnings: summary.warnings,
+      nativeOnly: true,
+    };
+  }
+
+  async getTokens(address, selectedChains = null) {
+    const balance = await this.getBalance(address, selectedChains);
+    return balance.chains.map((chain) => ({
+      address,
+      chainId: chain.chainId,
+      chainName: chain.chainName,
+      tokenAddress: 'native',
+      tokenSymbol: chain.nativeSymbol || 'ETH',
+      tokenName: `${chain.chainName} Native`,
+      tokenDecimals: 18,
+      amountRaw: chain.amountRaw,
+      amountDecimal: chain.amountDecimal,
+      usdValue: chain.priceUnavailable ? '' : String(chain.usdValue || '0'),
+      usdValueNumber: chain.priceUnavailable ? 0 : Core.safeNumber(chain.usdValueNumber),
+      usdValueUnavailable: Boolean(chain.priceUnavailable),
+      isVerified: true,
+      isNative: true,
+    }));
+  }
+
+  #mapSetupError(error) {
+    if (error instanceof AppError) return error;
+    if (error instanceof TypeError) {
+      return new AppError(
+        `Unable to reach TrueBlocks daemon at ${this.baseUrl}. Start it with "chifra daemon" and confirm browser access/CORS settings.`,
+        'trueblocks_unreachable',
+        502
+      );
+    }
+    return new AppError(
+      `TrueBlocks setup failed for ${this.baseUrl}: ${error instanceof Error ? error.message : 'unknown error'}`,
+      'trueblocks_setup_failed',
+      502
+    );
+  }
+
+  #parseBaseUrl() {
+    try {
+      return new URL(this.baseUrl);
+    } catch (_error) {
+      throw new AppError(
+        `Invalid TrueBlocks Base URL. Example: ${TRUEBLOCKS_DEFAULT_BASE_URL}`,
+        'trueblocks_invalid_url',
+        400
+      );
+    }
+  }
+
+  async #request(path) {
+    this.#parseBaseUrl();
+    const url = `${this.baseUrl.replace(/\/+$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+        },
+      });
+    } catch (error) {
+      throw new AppError(
+        `Cannot reach TrueBlocks daemon at ${this.baseUrl}: ${error instanceof Error ? error.message : 'network/CORS error'}`,
+        'trueblocks_unreachable',
+        502
+      );
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    let json = null;
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch (_error) {
+        throw new AppError(
+          `TrueBlocks returned non-JSON output (${contentType || 'unknown content type'}). Check the daemon URL.`,
+          'trueblocks_non_json',
+          502
+        );
+      }
+    }
+
+    if (!response.ok) {
+      const hint = json?.error?.message || json?.message || text.slice(0, 220) || 'request failed';
+      throw new AppError(`TrueBlocks request failed (${response.status}): ${hint}`, 'trueblocks_http_error', response.status);
+    }
+
+    if (!json || typeof json !== 'object') {
+      throw new AppError('TrueBlocks returned an empty response.', 'trueblocks_empty_response', 502);
+    }
+    return json;
+  }
+
+  async #mapWithConcurrency(items, concurrency, worker) {
+    const list = [...items];
+    const results = new Array(list.length);
+    let index = 0;
+    const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
+      while (true) {
+        const current = index;
+        index += 1;
+        if (current >= list.length) return;
+        results[current] = await worker(list[current], current);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
 }
 
 function updateProviderUI() {
   const provider = PROVIDERS[state.providerId];
+  if (!state.apiKey && provider.inputMode === 'base_url') {
+    state.apiKey = provider.defaultInputValue || TRUEBLOCKS_DEFAULT_BASE_URL;
+  }
+  state.providerInputs[state.providerId] = state.apiKey;
+
   ui.apiKeyLabel.textContent = provider.keyLabel;
   ui.apiKeyInput.placeholder = provider.keyPlaceholder;
+  ui.apiKeyInput.value = state.apiKey;
 
   const tierTag = `<span class="badge">${provider.tier}</span>`;
-  const link = `<a href="${provider.signupUrl}" target="_blank" rel="noopener noreferrer">Get key</a>`;
-  ui.providerHelp.innerHTML = `${tierTag} · ~${provider.supportedChainCount} chains · ${link} · <a href="${provider.docsUrl}" target="_blank" rel="noopener noreferrer">Docs</a>`;
+  const actionLabel = provider.signupLabel || (provider.inputMode === 'base_url' ? 'Setup' : 'Get key');
+  const actionLink = provider.signupUrl
+    ? `<a href="${provider.signupUrl}" target="_blank" rel="noopener noreferrer">${actionLabel}</a>`
+    : '';
+  const modeHint = provider.inputMode === 'base_url' ? 'Local daemon endpoint' : 'Hosted API key';
+  ui.providerHelp.innerHTML = [tierTag, `~${provider.supportedChainCount} chains`, modeHint, actionLink, `<a href="${provider.docsUrl}" target="_blank" rel="noopener noreferrer">Docs</a>`]
+    .filter(Boolean)
+    .join(' · ');
   renderProviderInfo();
 }
 
 function renderProviderInfo() {
   const provider = PROVIDERS[state.providerId];
   const limitValueText = provider.freeTier.limitValue === null ? 'Unknown' : String(provider.freeTier.limitValue);
+  const setupRow = provider.signupUrl
+    ? `<div class="row"><span>${provider.inputMode === 'base_url' ? 'Setup' : 'Key link'}</span><strong><a href="${provider.signupUrl}" target="_blank" rel="noopener noreferrer">open</a></strong></div>`
+    : '';
+  const endpointRow = provider.inputMode === 'base_url'
+    ? `<div class="row"><span>Default endpoint</span><strong>${Core.sanitizeText(provider.defaultInputValue || TRUEBLOCKS_DEFAULT_BASE_URL)}</strong></div>`
+    : '';
   ui.providerInfo.innerHTML = `
     <div class="row"><span>Tier</span><strong>${Core.sanitizeText(provider.tier)}</strong></div>
     <div class="row"><span>Phase</span><strong>${provider.phase}</strong></div>
@@ -600,7 +865,8 @@ function renderProviderInfo() {
     <div class="row"><span>Quota reference</span><strong>${Core.sanitizeText(limitValueText)}</strong></div>
     <div class="row"><span>Rate limit/s</span><strong>${provider.freeTier.rateLimitPerSec ?? 'unknown'}</strong></div>
     <div class="row"><span>Address pacing</span><strong>${SCAN_ADDRESS_DELAY_MS / 1000}s between scans</strong></div>
-    <div class="row"><span>Key link</span><strong><a href="${provider.signupUrl}" target="_blank" rel="noopener noreferrer">open</a></strong></div>
+    ${endpointRow}
+    ${setupRow}
     <div class="row"><span>Docs</span><strong><a href="${provider.docsUrl}" target="_blank" rel="noopener noreferrer">open</a></strong></div>
     <div class="footnote">${Core.sanitizeText(provider.caveat)}</div>
   `;
@@ -614,7 +880,9 @@ function getScanTimingProviderView() {
   const provider = PROVIDERS[state.providerId];
   const callsPerAddress = provider.supportsMultiChainCall
     ? provider.freeTier.callsPerAddressEstimate
-    : Math.max(1, Math.min(provider.freeTier.callsPerAddressEstimate, selectedChainCount() || 1));
+    : provider.id === 'trueblocks'
+      ? Math.max(1, selectedChainCount() || 1)
+      : Math.max(1, Math.min(provider.freeTier.callsPerAddressEstimate, selectedChainCount() || 1));
 
   return {
     ...provider,
@@ -661,6 +929,10 @@ function createMetadataAdapter(providerId) {
   const provider = PROVIDERS[providerId];
   if (!provider) throw new AppError('Unknown provider for chain metadata.', 'provider_unknown', 400);
   if (providerId === 'ankr') return new AnkrAdapter(provider, 'metadata-key');
+  if (providerId === 'trueblocks') {
+    const endpoint = state.apiKey.trim() || provider.defaultInputValue || TRUEBLOCKS_DEFAULT_BASE_URL;
+    return new TrueBlocksAdapter(provider, endpoint);
+  }
   if (providerId === 'moralis') return new MoralisAdapter(provider, 'metadata-key');
   throw new AppError('Provider metadata adapter unavailable in this phase.', 'provider_metadata_unavailable', 400);
 }
@@ -682,8 +954,15 @@ async function loadChainOptions() {
     state.activeChainOptions = chains.map((chain) => ({
       chainId: String(chain.chainId).toLowerCase(),
       chainName: String(chain.chainName || chain.chainId),
+      enabledByDefault: chain.enabledByDefault !== false,
     }));
-    state.selectedChains = new Set(state.activeChainOptions.map((chain) => chain.chainId));
+    const defaultChainIds = state.activeChainOptions
+      .filter((chain) => chain.enabledByDefault)
+      .map((chain) => chain.chainId);
+    const selected = defaultChainIds.length > 0
+      ? defaultChainIds
+      : state.activeChainOptions.map((chain) => chain.chainId);
+    state.selectedChains = new Set(selected);
     renderChainFilter();
   } catch (error) {
     setStatus(error.message || 'Failed to load provider chains.', 'error');
@@ -759,7 +1038,9 @@ function renderResults() {
   for (const row of rows) {
     const status = row.status;
     const summary = row.summary || {};
-    const topChain = summary.topChainName ? `${summary.topChainName} (${Core.formatUsd(summary.topChainUsdValueNumber || 0)})` : '—';
+    const topChain = summary.topChainName
+      ? `${summary.topChainName} (${summary.topChainUsdUnavailable ? 'N/A' : Core.formatUsd(summary.topChainUsdValueNumber || 0)})`
+      : '—';
     const tokenCountValue = row.tokensLoaded
       ? Core.filterTokensByDust(row.tokens || [], state.dustThresholdUsd).length
       : summary.tokenCount;
@@ -803,9 +1084,68 @@ function renderResults() {
 
 function renderDetails(row) {
   const chains = row.summary?.chains || [];
+  const warnings = Array.isArray(row.warnings) ? row.warnings : [];
+  const warningBlock = warnings.length > 0
+    ? `
+      <div class="footnote">
+        <strong>Warnings:</strong>
+        <ul>
+          ${warnings.map((warning) => `<li class="mono">${Core.sanitizeText(warning)}</li>`).join('')}
+        </ul>
+      </div>
+    `
+    : '';
   const chainItems = chains.length > 0
-    ? chains.map((chain) => `<li class="mono">${Core.sanitizeText(chain.chainName)} · ${Core.formatUsd(chain.usdValueNumber || 0)}</li>`).join('')
+    ? chains.map((chain) => {
+      const usdLabel = chain.priceUnavailable ? 'N/A' : Core.formatUsd(chain.usdValueNumber || 0);
+      const nativeBits = chain.amountDecimal !== undefined
+        ? ` · ${Core.sanitizeText(chain.amountDecimal)} ${Core.sanitizeText(chain.nativeSymbol || '')}`
+        : '';
+      return `<li class="mono">${Core.sanitizeText(chain.chainName)}${nativeBits} · ${usdLabel}</li>`;
+    }).join('')
     : '<li class="mono muted">No chain detail available.</li>';
+
+  if (row.summary?.nativeOnly) {
+    const nativeRows = chains.length > 0
+      ? `
+        <table class="token-table">
+          <thead>
+            <tr>
+              <th>Chain</th>
+              <th>Native</th>
+              <th>USD</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${chains.map((chain) => `
+              <tr>
+                <td class="mono">${Core.sanitizeText(chain.chainName)}</td>
+                <td class="mono">${Core.sanitizeText(chain.amountDecimal || '0')} ${Core.sanitizeText(chain.nativeSymbol || 'ETH')}</td>
+                <td>${chain.priceUnavailable ? 'N/A' : Core.formatUsd(chain.usdValueNumber || 0)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `
+      : '<div class="muted">No chain detail available.</div>';
+
+    return `
+      <div class="details">
+        ${warningBlock}
+        <div class="details-grid">
+          <div>
+            <strong>Chains by value</strong>
+            <ul>${chainItems}</ul>
+          </div>
+          <div>
+            <strong>Native Balances (MVP)</strong>
+            ${nativeRows}
+            <div class="footnote">TrueBlocks mode currently includes native balances only. Token-level holdings are out of scope in this MVP.</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   if (row.tokensLoading) {
     return `<div class="details">Loading token detail...</div>`;
@@ -833,7 +1173,7 @@ function renderDetails(row) {
               <td class="mono">${Core.sanitizeText(token.chainName)}</td>
               <td class="mono">${Core.sanitizeText(token.tokenSymbol)}</td>
               <td class="mono">${Core.sanitizeText(token.amountDecimal)}</td>
-              <td>${Core.formatUsd(token.usdValueNumber || 0)}</td>
+              <td>${token.usdValueUnavailable ? 'N/A' : Core.formatUsd(token.usdValueNumber || 0)}</td>
             </tr>
           `).join('')}
         </tbody>
@@ -844,6 +1184,7 @@ function renderDetails(row) {
 
   return `
     <div class="details">
+      ${warningBlock}
       <div class="details-grid">
         <div>
           <strong>Chains by value</strong>
@@ -905,27 +1246,59 @@ function computeSummary(balanceResult) {
     tokenCount: balanceResult.tokenCount ?? null,
     topChainName: topChain?.chainName || '',
     topChainUsdValueNumber: Core.safeNumber(topChain?.usdValueNumber),
+    topChainUsdUnavailable: Boolean(topChain?.priceUnavailable),
+    nativeOnly: Boolean(balanceResult.nativeOnly),
     chains: sortedChains,
   };
+}
+
+function buildNativeTokensFromSummary(entry) {
+  const chains = Array.isArray(entry?.summary?.chains) ? entry.summary.chains : [];
+  return chains.map((chain) => {
+    const usdValueNumber = Core.safeNumber(chain.usdValueNumber);
+    return {
+      address: entry.address,
+      chainId: chain.chainId,
+      chainName: chain.chainName,
+      tokenAddress: 'native',
+      tokenSymbol: chain.nativeSymbol || 'ETH',
+      tokenName: `${chain.chainName} Native`,
+      tokenDecimals: 18,
+      amountRaw: String(chain.amountRaw || '0'),
+      amountDecimal: String(chain.amountDecimal || '0'),
+      usdValue: chain.priceUnavailable ? '' : usdValueNumber.toFixed(8),
+      usdValueNumber: chain.priceUnavailable ? 0 : usdValueNumber,
+      usdValueUnavailable: Boolean(chain.priceUnavailable),
+      isVerified: true,
+      isNative: true,
+    };
+  });
 }
 
 async function scanAddress(adapter, address) {
   const entry = state.results.get(address) || createResultEntry(address);
   entry.status = 'running';
   entry.error = null;
+  entry.warnings = [];
   state.results.set(address, entry);
   renderResults();
 
   try {
     const balanceResult = await adapter.getBalance(address, state.selectedChains);
     entry.summary = computeSummary(balanceResult);
+    entry.warnings = Array.isArray(balanceResult.warnings) ? balanceResult.warnings : [];
     entry.status = 'success';
     entry.error = null;
-    logEvent('info', 'scan.address.success', { address, totalUsd: entry.summary.totalUsdValue });
+    logEvent('info', 'scan.address.success', {
+      address,
+      totalUsd: entry.summary.totalUsdValue,
+      warningCount: entry.warnings.length,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown scan error';
     entry.status = 'error';
     entry.error = message;
+    entry.warnings = [];
     state.scan.failed += 1;
     logEvent('error', 'scan.address.error', { address, message });
   } finally {
@@ -947,8 +1320,11 @@ function createResultEntry(address) {
       tokenCount: null,
       topChainName: '',
       topChainUsdValueNumber: 0,
+      topChainUsdUnavailable: false,
+      nativeOnly: false,
       chains: [],
     },
+    warnings: [],
     tokens: null,
     tokensLoading: false,
     tokensLoaded: false,
@@ -976,7 +1352,7 @@ async function startScan() {
     adapter = createAdapter(state.providerId, state.apiKey);
     const validKey = await adapter.validateKey();
     if (!validKey) {
-      throw new AppError('API key format validation failed.', 'invalid_key', 400);
+      throw new AppError('Provider credential validation failed.', 'invalid_key', 400);
     }
   } catch (error) {
     setStatus(error.message || 'Provider setup failed.', 'error');
@@ -1048,6 +1424,18 @@ async function ensureTokensLoaded(adapter, address) {
   state.results.set(address, entry);
   renderResults();
 
+  if (entry.summary?.nativeOnly) {
+    const tokens = buildNativeTokensFromSummary(entry);
+    entry.tokens = tokens;
+    entry.tokensLoaded = true;
+    entry.tokensLoading = false;
+    entry.tokenError = null;
+    entry.summary.tokenCount = tokens.length;
+    state.results.set(address, entry);
+    renderResults();
+    return;
+  }
+
   try {
     const tokens = await adapter.getTokens(address, state.selectedChains);
     entry.tokens = tokens;
@@ -1074,6 +1462,10 @@ async function toggleDetails(address) {
   renderResults();
 
   if (entry.expanded && !entry.tokensLoaded && !entry.tokensLoading) {
+    if (entry.summary?.nativeOnly) {
+      await ensureTokensLoaded(null, address);
+      return;
+    }
     let adapter;
     try {
       adapter = createAdapter(state.providerId, state.apiKey);
@@ -1130,32 +1522,12 @@ async function exportCsvFull() {
   });
 
   const timestamp = new Date().toISOString();
-  const records = [];
-  let tokenLoadFailures = 0;
-
-  for (const entry of [...state.results.values()].filter((row) => row.status === 'success')) {
-    if (entry.tokenError) {
-      tokenLoadFailures += 1;
-      continue;
-    }
-    const tokens = entry.tokens || [];
-    for (const token of tokens) {
-      records.push({
-        scan_timestamp_utc: timestamp,
-        provider_id: state.providerId,
-        address: entry.address,
-        chain_id: token.chainId,
-        chain_name: token.chainName,
-        token_address: token.tokenAddress,
-        token_symbol: token.tokenSymbol,
-        token_name: token.tokenName,
-        token_decimals: String(token.tokenDecimals),
-        token_amount_raw: token.amountRaw,
-        token_amount_decimal: token.amountDecimal,
-        token_usd_value: token.usdValue,
-      });
-    }
-  }
+  const finishedEntries = [...state.results.values()].filter((row) => row.status === 'success');
+  const tokenLoadFailures = finishedEntries.filter((entry) => Boolean(entry.tokenError)).length;
+  const records = Core.buildExportRecords(finishedEntries, {
+    timestamp,
+    providerId: state.providerId,
+  });
 
   const csv = Core.toCsv(records);
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -1228,7 +1600,11 @@ async function ingestCsvFile(file) {
 
 function bindEvents() {
   ui.providerSelect.addEventListener('change', async () => {
+    const previousProviderId = state.providerId;
+    state.providerInputs[previousProviderId] = state.apiKey;
     state.providerId = ui.providerSelect.value;
+    const nextProvider = PROVIDERS[state.providerId];
+    state.apiKey = state.providerInputs[state.providerId] ?? nextProvider.defaultInputValue ?? '';
     updateProviderUI();
     await loadChainOptions();
     setStatus(`Provider switched to ${PROVIDERS[state.providerId].name}.`, 'ok');
@@ -1236,6 +1612,7 @@ function bindEvents() {
 
   ui.apiKeyInput.addEventListener('input', () => {
     state.apiKey = ui.apiKeyInput.value;
+    state.providerInputs[state.providerId] = state.apiKey;
   });
 
   ui.manualInput.addEventListener('input', () => {
@@ -1354,6 +1731,8 @@ async function initProviders() {
     .join('');
 
   state.providerId = available[0]?.id || 'ankr';
+  state.apiKey = state.providerInputs[state.providerId] ?? PROVIDERS[state.providerId]?.defaultInputValue ?? '';
+  state.providerInputs[state.providerId] = state.apiKey;
   ui.providerSelect.value = state.providerId;
   updateProviderUI();
   await loadChainOptions();
