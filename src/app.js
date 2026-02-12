@@ -56,7 +56,7 @@ const PROVIDERS = {
     keyPlaceholder: TRUEBLOCKS_DEFAULT_BASE_URL,
     defaultInputValue: TRUEBLOCKS_DEFAULT_BASE_URL,
     signupLabel: 'Setup daemon',
-    signupUrl: 'https://docs.trueblocks.io/install/',
+    signupUrl: 'https://trueblocks.io/docs/install/install-core/',
     docsUrl: 'https://docs.trueblocks.io/api/',
     defaultConcurrency: 3,
     freeTier: {

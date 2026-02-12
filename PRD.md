@@ -149,7 +149,7 @@ Ordered by recommendation: free-tier providers first for 50-500 address use case
 | **Auth Method** | No API key; configurable daemon URL |
 | **Default Endpoint** | `http://127.0.0.1:8080` |
 | **Tradeoff** | No provider key/rate-limit model, but requires local daemon setup |
-| **Setup** | [docs.trueblocks.io/install](https://docs.trueblocks.io/install/) |
+| **Setup** | [trueblocks.io/docs/install/install-core](https://trueblocks.io/docs/install/install-core/) |
 
 ### Tier 2 - Freemium, Per-Chain Calls
 
@@ -472,7 +472,7 @@ interface TokenResult {
 - **Auth:** none
 - **Endpoints:** `/status?chains=true`, `/state?addrs=...&parts=balance&ether=true&chain=...`
 - **Pricing:** CoinGecko Simple Price API (best-effort only)
-- **Setup:** [docs.trueblocks.io/install](https://docs.trueblocks.io/install/)
+- **Setup:** [trueblocks.io/docs/install/install-core](https://trueblocks.io/docs/install/install-core/)
 - **Docs:** [docs.trueblocks.io/api](https://docs.trueblocks.io/api/)
 
 ### Covalent / GoldRush (FREEMIUM, Phase 2)

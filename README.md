@@ -32,7 +32,7 @@ GitHub Actions deploys to GitHub Pages on every push to `main` using:
 ## TrueBlocks Local Daemon Setup
 
 1. Install TrueBlocks Core:
-   - [https://docs.trueblocks.io/install/](https://docs.trueblocks.io/install/)
+   - [https://trueblocks.io/docs/install/install-core/](https://trueblocks.io/docs/install/install-core/)
 2. Start daemon locally:
    - `chifra daemon`
 3. In the app, select `TrueBlocks (Local)` provider.
